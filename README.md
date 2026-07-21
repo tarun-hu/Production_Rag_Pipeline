@@ -47,14 +47,22 @@ graph TD
         T -->|GPU Autocast| U[crag_check_node]
         U -->|Relevance >= 0.7| W[spotlight_node]
         U -->|Relevance < 0.7| Interrupt{HITL Pause: web_fallback}:::pause
-        Interrupt -->|Rejection / No| Z_Warn[Set Document Upload Warning]
-        Interrupt -->|Approval / Yes| V[web_fallback: Run Tavily Search]
+        
+        %% HITL Branching
+        Interrupt -->|User Approves| V[web_fallback: Tavily Web Search]
+        Interrupt -->|User Rejects| RejectNode{Has Deflection Answer?}
+        RejectNode -->|Yes| ShowDeflection[Show Original LLM Answer]
+        RejectNode -->|No| ShowWarning[Show Document Upload Warning]
+
         V --> W
         W --> X[generate_node]:::llm
         X --> Y[self_rag_reflect]
+        
+        %% Deflection & Self-RAG Routing
+        Y -->|Deflection Detected & Web Search Pending| Interrupt
         Y -->|Score < 0.8 & Retries < 2| X
-        Y -->|Score >= 0.8| Z[cache_answer]
-        Z_Warn --> Z
+        Y -->|Score >= 0.8 / Max Retries| Z[cache_answer]
+        ShowDeflection & ShowWarning --> Z
         Z --> Output[run_output_security_pipeline]:::security
     end
 
@@ -73,75 +81,60 @@ This section maps all functions file-by-file with a detailed **Hinglish** transl
 
 ### ⚙️ `config.py` — Settings and API Factories
 *   **`get_llm_client()`**
-    *   *Hinglish*: Yeh function NVIDIA NIM server ke liye OpenAI client initialize karta hai, jo deepseek-ai/deepseek-v4-pro model run karne ke kaam aata hai (jisme thinking mode disable kiya hua hai).
+    *   *Hinglish*: NVIDIA NIM server ke liye OpenAI client initialize karta hai jo `deepseek-ai/deepseek-v4-pro` model run karta hai.
 *   **`get_embedding_client()`**
-    *   *Hinglish*: BGE local embedding models load karne se pehle variables load karta hai aur client instances manage karta hai.
+    *   *Hinglish*: Local embedding models (BGE) ke environment parameters load karta hai.
 
 ### 🔑 `auth.py` — Supabase Auth Guard
 *   **`get_current_user(token)`**
-    *   *Hinglish*: Incoming HTTP Request se Bearer Token nikalta hai aur use Supabase ke JWKS endpoints se verify karta hai. Agar token galat ya expire ho gaya ho, toh 401 Unauthorized exception raise kar deta hai.
+    *   *Hinglish*: Incoming request se Bearer JWT token extract karta hai aur Supabase ke JWKS keys se decode karke `user_id` verify karta hai.
 
 ### 🛑 `rate_limiter.py` — Upstash Rate Limiter
 *   **`rate_limit_dependency(user)`**
-    *   *Hinglish*: Supabase authenticated `user_id` ke basis par check karta hai ki kisi user ne query limit exceed toh nahi ki. Agar Redis link offline ho, toh connection graceful degrade karke allow kar deta hai.
+    *   *Hinglish*: `user_id` ke basis par Upstash Redis check karta hai. Agar Redis offline ho toh request ko pass hone deta hai (graceful degradation).
 
 ### 🛡️ `security.py` — Input/Output Guard Rails
 *   **`run_input_security_pipeline(query)`**
-    *   *Hinglish*: User query ko check karta hai SQL injection, prompt injection, toxicity aur dynamic PII leaks ke liye. Agar query unsafe lagti hai toh turant block response bhej deta hai.
+    *   *Hinglish*: SQL Injection, Prompt Injection, toxicity, aur sensitive PII data check karta hai query ingest karne se pehle.
 *   **`run_output_security_pipeline(response)`**
-    *   *Hinglish*: System output me se dynamic PII variables (email, phones, CC numbers) mask/redact karta hai taaki sensitive data public network pe leak na ho.
+    *   *Hinglish*: Output response me se emails, phone numbers, and CC details mask/redact karta hai.
 
 ### 🧠 `cache.py` — Redis Two-Tier Cache Client
 *   **`cache_key(prefix, text, user_id=None)`**
-    *   *Hinglish*: Caching keys generate karne ke liye hash banata hai. Agar `user_id` diya ho toh key `prefix:user_id:hash` banti hai, jo users ke database cache data ko complete isolate rakhti hai.
+    *   *Hinglish*: Key structure generate karta hai (`rag:user_id:hash`). Single-tenant cache partition multi-tenant data leaks completely eliminate kar deta hai.
 *   **`get_cached_embedding(text)` / `set_cached_embedding(...)`**
-    *   *Hinglish*: Mathematical embedding representations save karta hai. Yeh cache shared/global hota hai taaki common queries ke embeddings fast load ho sakein bina GPU recalculation ke.
+    *   *Hinglish*: Global embedding cache compute tokens save karta hai.
 *   **`get_cached_answer(query, user_id)` / `set_cached_answer(...)`**
-    *   *Hinglish*: Caches answers isolated strictly by `user_id` so that Bob is never shown Alice's private answers, preventing data leaks.
+    *   *Hinglish*: Caches answers isolated strictly by `user_id` for 7 days.
 
 ### 📂 `ingestion.py` — Layout Ingestion Controller
 *   **`parse_pdf(file, filename)`**
-    *   *Hinglish*: PDF lines and sections stream load karta hai page markers (`[PAGE_X]`) inject karte hue taaki metadata coordinate extraction secure ho sake.
+    *   *Hinglish*: PDF text stream parse karta hai `[PAGE_X]` labels inject karke.
 *   **`post_process_chunks(chunks, combined_text)`**
-    *   *Hinglish*: Chunks me se internal page labels `[PAGE_X]` ko remove karta hai aur page index ko metadata structure mapping coordinates me mapping karta hai.
+    *   *Hinglish*: `[PAGE_X]` labels clean karta hai aur absolute page metadata coordinates match karta hai.
 *   **`embed_chunks(chunks)`**
-    *   *Hinglish*: Local `bge-small-en-v1.5` model se chunk content vectors calculate karta hai GPU mixed-precision features use karke.
-*   **`ingest_pdf(file, filename, user_id)`**
-    *   *Hinglish*: Ingestion workflow assemble karke final document index updates database and Qdrant local database me load karta hai.
+    *   *Hinglish*: Chunks ko `BAAI/bge-small-en-v1.5` local model se encode karwata hai GPU PyTorch FP16 support ke saath.
 
 ### 📝 `chunking_strategies.py` — Document-Aware Chunker Hub
 *   **`classify_document(sample_text)`**
-    *   *Hinglish*: Ingested PDF ka sample text check karke LLM se poochta hai ki yeh category Textbooks, API documentation, ya SOP policies me se kaun si category me belong karta hai.
-*   **`chunk_textbooks(...)`**
-    *   *Hinglish*: Continuity mapping layout rules par textbooks divide karta hai. LaTeX blocks aur formulas protect karke 10-15% range overlap apply karta hai.
-*   **`chunk_api_documentation(...)`**
-    *   *Hinglish*: Code scripts or table limits parse karta hai. Prose content me 20% range overlap use karta hai jabki code blocks ` ``` ` me strictly 0% overlap use karta hai syntax break hone se bachane ke liye.
-*   **`chunk_sops_hr_policies(...)`**
-    *   *Hinglish*: Structural rules read karke Version numbers aur owner department metadata properties parse karta hai aur nodes ko 10% overlap limits par break karta hai.
-
-### 🖥️ `models_local.py` — Local GPU Model Allocator
-*   **`get_embedding_model()`**
-    *   *Hinglish*: Local embedding generator model load karta hai local NVIDIA GPU par execution ke liye.
-*   **`get_reranker_model()`**
-    *   *Hinglish*: Local Cross-Encoder model allocate aur compile karta hai memory structure me.
+    *   *Hinglish*: Initial 1,500 chars LLM se classify karta hai: Textbooks, API documentation, ya SOP policies.
+*   **`chunk_textbooks(...)`**: 10-15% sliding window overlap with LaTeX block isolation.
+*   **`chunk_api_documentation(...)`**: Strict 0% overlap inside code blocks (` ``` `), 20% on prose text.
+*   **`chunk_sops_hr_policies(...)`**: 10% overlap tied with metadata headers (`version`, `department_owner`).
 
 ### 🕸️ `rag_graph.py` — LangGraph Pipeline Engine
-*   **`clear_bm25_cache(user_id)`**
-    *   *Hinglish*: Kisi tenant ke dynamic BM25 cached corpus parameters clear karta hai jab woh naye documents index upload kare.
-*   **`hybrid_retrieval_node(state)`**
-    *   *Hinglish*: Localized BM25 sparse search and Qdrant dense vector search execute karta hai user query parameters par.
-*   **`rerank_node(state)`**
-    *   *Hinglish*: Retrieval candidates score karta hai local Cross-Encoder use karke GPU tensor mixed-precision autocast execution settings ke under.
+*   **`_is_deflection(answer)`**
+    *   *Hinglish*: Check karta hai ki LLM ne refusal/deflection statement generate ki hai ya nahi (*"does not contain"*, *"no information about"*).
+*   **`self_rag_reflect_node(state)`**
+    *   *Hinglish*: Answer groundedness score calculate karta hai (0.0 to 1.0). Agar context off-topic hone ki wajah se LLM deflection statement deta hai, toh execution prompt status update karke HITL web search activate kar deta hai.
 *   **`web_fallback_node(state)`**
-    *   *Hinglish*: Tavily client connection handle karta hai. Agar web search approve hua ho toh real-time data fetch karta hai; agar reject hua ho toh warning answer save kar deta hai.
-*   **`route_after_web_fallback(state)`**
-    *   *Hinglish*: Conditional edges handle karta hai. Agar user search parameters cancel kiye ho toh seedhe cache_answer node bypass karta hai generation and self_rag skip karke.
+    *   *Hinglish*: HITL pause node. Agar user search approve kare, toh Tavily search run karke web context fetch karta hai. Agar user reject kare, toh standard upload warning ya existing deflection answer show karta hai.
+*   **`route_after_self_rag(state)`**
+    *   *Hinglish*: Conditional edges handle karta hai. Agar `web_search_needed` flag active ho, toh standard flow interrupt karke `web_fallback` trigger karta hai.
 
 ### 🌐 `main.py` — FastAPI Interface Gateway
-*   **`lifespan(app)`**
-    *   *Hinglish*: Application trigger hote hi checkpointer initialization setup execute karta hai autocommit support settings par connection pool parameters check karte hue.
-*   **`resume_query(request, user)`**
-    *   *Hinglish*: Paused checkpointer task queue fetch karke user verification values state config save database resume trigger dynamic workflow run karke complete answers details output deta hai.
+*   **`lifespan(app)`**: Initializes `PostgresSaver` checkpointer with `autocommit=True`.
+*   **`resume_query(request, user)`**: Updates paused thread checkpoint state with `web_search_approved` feedback and resumes graph execution.
 
 ---
 
@@ -195,17 +188,16 @@ During document upload, the first 1,500 characters are parsed and analyzed by th
 
 ### 💻 Technical Questions
 
-#### Q1: Reranking pipelines are highly effective but represent a massive latency bottleneck. How did you optimize this in your RAG graph?
-*   **Answer**: We optimized this bottleneck using three strategies:
-    1.  **PyTorch Autocast (Mixed-Precision)**: Wrapped Cross-Encoder scoring in a `torch.amp.autocast(device_type="cuda", dtype=torch.float16)` block on the RTX 3060, speeding up forward inference passes by 2x.
-    2.  **Optimized Retrieval K**: Reduced dense and sparse retrieval targets from 20 to 12. Reranking 24 candidates instead of 40 saved 40% of Cross-Encoder model processing time.
-    3.  **Candidate Batching**: Grouped candidate scoring batches directly inside Cross-Encoder `predict(pairs, batch_size=32)` calls to maximize GPU parallel utilization.
+#### Q1: How did you implement Human-in-the-Loop (HITL) web search confirmation in your RAG graph?
+*   **Answer**: We compiled the LangGraph state machine with `interrupt_before=["web_fallback"]`. When local retrieval scores are below threshold ($<0.7$) or when Self-RAG detects an LLM deflection statement (*"the context does not contain..."*), the graph sets `web_search_needed = True` and pauses before `web_fallback`. FastAPI yields a `202 Accepted` status with the `thread_id`. The Streamlit UI displays confirmation buttons. When the user approves or rejects, `/query/resume` updates the active checkpoint state and resumes graph execution using `graph.invoke(None, config)`.
 
-#### Q2: How is multi-tenancy and data security handled at the database level when documents are ingested and queried?
+#### Q2: How do you prevent deflection/refusal statements from polluting your answer cache or causing infinite loops?
+*   **Answer**: 
+    1.  **Cache Guard**: In `cache_answer_node`, we inspect the output with `_is_deflection(answer)`. Any response matching deflection phrases (*"does not contain"*, *"no information about"*, etc.) or error fallbacks is **strictly excluded** from Upstash Redis caching.
+    2.  **Loop Prevention**: When web search is approved (`web_search_approved = True`), `self_rag_reflect` skips deflection detection because web search is the last resort. This guarantees the graph finalizes and returns the grounded web answer without looping infinitely.
+
+#### Q3: How is multi-tenancy and data security handled at the database level when documents are ingested and queried?
 *   **Answer**: Multi-tenancy is handled via **payload metadata partitioning**. When a PDF is chunked and embedded, we link the user's decoded Supabase UUID (`user_id`) directly to the chunk payload in Qdrant. During query retrieval, we apply a strict Qdrant filter constraint: `Filter(must=[FieldCondition(key="user_id", match=MatchValue(value=user_id))])`. This isolates the vector space dynamically without requiring separate physical collections.
-
-#### Q3: How did you implement Human-in-the-Loop (HITL) workflows in LangGraph to prevent running expensive or unapproved web search queries?
-*   **Answer**: We compiled our workflow with `interrupt_before=["web_fallback"]`. When local retrieval results have low relevance, execution halts before executing Tavily search, saving state to our PostgresSaver checkpointer. FastAPI yields a `202 Accepted` status to the Streamlit UI containing the paused `thread_id`. The user approves/rejects search in the UI. We then call `/query/resume`, update the active checkpoint using the exact `state_snapshot.config`, and resume the pregel execution with `graph.invoke(None, config)`.
 
 #### Q4: Why does psycopg3's default behavior cause failures in LangGraph Postgres checkpointer setup, and how did you resolve it?
 *   **Answer**: By default, psycopg3 runs queries in implicit transactions (`autocommit=False`). However, LangGraph's `PostgresSaver.setup()` migrates tables using the `CREATE INDEX CONCURRENTLY` statement, which PostgreSQL strictly forbids running inside open transaction blocks. We resolved this by configuring the connection pool with `kwargs={"autocommit": True}` during lifespan startup, allowing migration indexing scripts to run successfully.

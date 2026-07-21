@@ -362,7 +362,7 @@ def web_fallback_node(state: RAGState) -> dict:
             logger.error(f"Tavily fallback failed: {e}")
             return {"web_results": []}
     else:
-        # If there's already a generated answer (deflection-triggered HITL),
+        # If there's already a generated answer (deflection-triggered HITL)
         # show that answer instead of the generic upload warning.
         existing_answer = state.get("generated_answer")
         if existing_answer:
@@ -507,6 +507,7 @@ Respond with ONLY a single decimal number (e.g., 0.85). Nothing else."""
             "self_rag_score": score,
             "final_answer": state["generated_answer"],
             "retry_count": retry_count,
+            "web_search_needed": False,
         }
     else:
         return {
@@ -547,15 +548,13 @@ def route_after_cache_check(state: RAGState) -> str:
 
 
 def route_after_self_rag(state: RAGState) -> str:
-    """If Self-RAG passed or max retries hit, cache the answer.
-    If a deflection was detected, route to web_fallback for HITL.
+    """If a final answer is set, proceed to cache.
+    If web_search_needed is set (deflection or CRAG), route to web_fallback.
     Otherwise, regenerate."""
-    if state.get("web_search_needed") and not state.get("web_search_approved"):
-        # Deflection detected — the local docs were irrelevant.
-        # Route to web_fallback so the user can approve a web search.
-        return "web_fallback"
     if state.get("final_answer"):
         return "cache_answer"
+    if state.get("web_search_needed"):
+        return "web_fallback"
     return "generate"
 
 

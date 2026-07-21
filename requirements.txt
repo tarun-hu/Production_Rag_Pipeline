@@ -1,0 +1,49 @@
+# === Core API Framework ===
+fastapi
+uvicorn[standard]
+python-dotenv
+python-multipart
+
+# === Database (SQLAlchemy for legacy, Supabase Postgres for new) ===
+sqlalchemy
+psycopg[binary,pool]
+psycopg2-binary
+
+# === Auth ===
+pyjwt[crypto]
+cryptography
+requests
+
+# === Rate Limiting & Caching (Upstash) ===
+upstash-redis
+upstash-ratelimit
+
+# === LLM Providers ===
+openai
+google-generativeai
+tiktoken
+
+# === Vector DB (Qdrant Local) ===
+qdrant-client
+
+# === Document Parsing (LlamaIndex) ===
+llama-index-core
+llama-index-readers-file
+
+# === RAG Pipeline ===
+rank-bm25
+sentence-transformers
+tavily-python
+
+# === Orchestration (LangGraph) ===
+langgraph
+langgraph-checkpoint-postgres
+
+# === Input Security ===
+llm-guard
+
+# === UI ===
+streamlit
+
+# === Schema Validation ===
+pydantic

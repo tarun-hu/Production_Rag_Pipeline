@@ -59,9 +59,11 @@ class RAGState(TypedDict):
     fused_results: list[dict]
     reranked_results: list[dict]
 
-    # CRAG
+    # CRAG / HITL
     web_results: list[dict]
     crag_decision: str  # "accept" or "web_fallback"
+    web_search_needed: bool
+    web_search_approved: Optional[bool]
 
     # Context
     spotlight_context: str
@@ -278,47 +280,71 @@ def rerank_node(state: RAGState) -> dict:
 def crag_check_node(state: RAGState) -> dict:
     """
     CRAG: Grade relevance of top result.
-    If below threshold, fall back to Tavily web search.
+    Determines if a web search is needed.
     """
     results = state["reranked_results"]
 
     if not results:
-        # No results at all → web fallback
-        logger.info("CRAG: No results — triggering Tavily fallback")
-        return _tavily_fallback(state["query"])
+        logger.info("CRAG: No local documents found — web search needed.")
+        return {
+            "crag_decision": "web_fallback",
+            "web_search_needed": True,
+            "web_results": [],
+        }
 
     top_score = results[0].get("rerank_score", 0)
     if top_score < CRAG_RELEVANCE_THRESHOLD:
-        logger.info(
-            f"CRAG: Top score {top_score:.3f} < threshold {CRAG_RELEVANCE_THRESHOLD} "
-            f"— triggering Tavily fallback"
-        )
-        return _tavily_fallback(state["query"])
+        logger.info(f"CRAG: Top score {top_score:.3f} < threshold {CRAG_RELEVANCE_THRESHOLD} — web search needed.")
+        return {
+            "crag_decision": "web_fallback",
+            "web_search_needed": True,
+            "web_results": [],
+        }
 
-    logger.info(f"CRAG: Top score {top_score:.3f} — accepting local results")
-    return {"crag_decision": "accept", "web_results": []}
+    logger.info(f"CRAG: Top score {top_score:.3f} — accepting local results.")
+    return {
+        "crag_decision": "accept",
+        "web_search_needed": False,
+        "web_results": [],
+    }
 
 
-def _tavily_fallback(query: str) -> dict:
-    """Execute Tavily web search as CRAG fallback."""
-    try:
-        from tavily import TavilyClient
-
-        client = TavilyClient(api_key=TAVILY_API_KEY)
-        response = client.search(query=query, max_results=3)
-        web_results = [
-            {
-                "content": r.get("content", ""),
-                "url": r.get("url", ""),
-                "title": r.get("title", ""),
-            }
-            for r in response.get("results", [])
-        ]
-        logger.info(f"Tavily returned {len(web_results)} web results")
-        return {"crag_decision": "web_fallback", "web_results": web_results}
-    except Exception as e:
-        logger.error(f"Tavily fallback failed: {e}")
-        return {"crag_decision": "web_fallback", "web_results": []}
+def web_fallback_node(state: RAGState) -> dict:
+    """
+    Node to execute Tavily web search.
+    Pauses before execution via LangGraph interrupt.
+    """
+    logger.info(f"web_fallback_node called. State keys: {list(state.keys())}")
+    approved = state.get("web_search_approved")
+    logger.info(f"web_fallback_node: approved is {approved} (type: {type(approved)})")
+    
+    if approved is True:
+        logger.info("Web search APPROVED. Executing Tavily query...")
+        try:
+            from tavily import TavilyClient
+            client = TavilyClient(api_key=TAVILY_API_KEY)
+            response = client.search(query=state["query"], max_results=3)
+            web_results = [
+                {
+                    "content": r.get("content", ""),
+                    "url": r.get("url", ""),
+                    "title": r.get("title", ""),
+                }
+                for r in response.get("results", [])
+            ]
+            logger.info(f"Tavily returned {len(web_results)} web results")
+            return {"web_results": web_results}
+        except Exception as e:
+            logger.error(f"Tavily fallback failed: {e}")
+            return {"web_results": []}
+    else:
+        logger.info("Web search REJECTED or skipped. Directing to document upload warning.")
+        msg = "You haven't embedded any documents yet, upload your files to get started."
+        return {
+            "final_answer": msg,
+            "generated_answer": msg,
+            "web_results": [],
+        }
 
 
 def spotlight_node(state: RAGState) -> dict:
@@ -475,6 +501,22 @@ def route_after_self_rag(state: RAGState) -> str:
     return "generate"
 
 
+def route_after_crag(state: RAGState) -> str:
+    """Route to web fallback if search is needed, else proceed to spotlight."""
+    if state.get("web_search_needed"):
+        return "web_fallback"
+    return "spotlight"
+
+
+def route_after_web_fallback(state: RAGState) -> str:
+    """If web search was rejected, skip generation and go to caching. Else proceed to spotlight."""
+    val = state.get("web_search_approved")
+    logger.info(f"route_after_web_fallback: web_search_approved is {val} (type: {type(val)})")
+    if val is False:
+        return "cache_answer"
+    return "spotlight"
+
+
 # =====================================================================
 # Graph Construction
 # =====================================================================
@@ -492,6 +534,7 @@ def build_rag_graph():
     graph.add_node("rrf_fusion", rrf_fusion_node)
     graph.add_node("rerank", rerank_node)
     graph.add_node("crag_check", crag_check_node)
+    graph.add_node("web_fallback", web_fallback_node)
     graph.add_node("spotlight", spotlight_node)
     graph.add_node("generate", generate_node)
     graph.add_node("self_rag_reflect", self_rag_reflect_node)
@@ -505,7 +548,8 @@ def build_rag_graph():
     graph.add_edge("hybrid_retrieval", "rrf_fusion")
     graph.add_edge("rrf_fusion", "rerank")
     graph.add_edge("rerank", "crag_check")
-    graph.add_edge("crag_check", "spotlight")
+    graph.add_conditional_edges("crag_check", route_after_crag)
+    graph.add_conditional_edges("web_fallback", route_after_web_fallback)
     graph.add_edge("spotlight", "generate")
     graph.add_edge("generate", "self_rag_reflect")
     graph.add_conditional_edges("self_rag_reflect", route_after_self_rag)
@@ -515,8 +559,11 @@ def build_rag_graph():
 
 
 def compile_rag_graph(checkpointer=None):
-    """Build, compile, and return the runnable RAG graph."""
+    """Build, compile, and return the runnable RAG graph with HITL interrupts before web search."""
     graph = build_rag_graph()
-    if checkpointer:
-        return graph.compile(checkpointer=checkpointer)
-    return graph.compile()
+    
+    if checkpointer is None:
+        from langgraph.checkpoint.memory import MemorySaver
+        checkpointer = MemorySaver()
+        
+    return graph.compile(checkpointer=checkpointer, interrupt_before=["web_fallback"])

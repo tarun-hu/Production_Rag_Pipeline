@@ -75,6 +75,10 @@ if "user_email" not in st.session_state:
     st.session_state.user_email = None
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
+if "paused_thread_id" not in st.session_state:
+    st.session_state.paused_thread_id = None
+if "paused_query" not in st.session_state:
+    st.session_state.paused_query = None
 
 
 def get_auth_headers():
@@ -241,86 +245,163 @@ for msg in st.session_state.chat_history:
                     st.markdown("**🛡️ Security Pipeline:**")
                     st.json(trace["security_details"])
 
-# Chat input
-if prompt := st.chat_input("Ask a question about your uploaded documents..."):
-    # Display user message
-    st.session_state.chat_history.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
+# If there is a paused thread waiting for HITL approval, show the prompt buttons
+if st.session_state.paused_thread_id:
+    st.warning("⚠️ **Web Search Required**: No relevant context was found in your uploaded documents. Do you want to run a web search?")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("👍 Yes, search the web", use_container_width=True):
+            with st.spinner("Resuming with web search..."):
+                try:
+                    resp = requests.post(
+                        f"{API_BASE}/query/resume",
+                        headers={
+                            **get_auth_headers(),
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "thread_id": st.session_state.paused_thread_id,
+                            "approve": True,
+                            "query": st.session_state.paused_query
+                        }
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        st.session_state.chat_history.append({
+                            "role": "assistant",
+                            "content": data["answer"],
+                            "trace": {
+                                "cache_hit": data.get("cache_hit", False),
+                                "sources": data.get("sources", []),
+                                "security_details": data.get("security_details", {}),
+                                "response_time": "Resumed"
+                            }
+                        })
+                        # Clear pause state
+                        st.session_state.paused_thread_id = None
+                        st.session_state.paused_query = None
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to resume query: {e}")
+                    
+    with col2:
+        if st.button("❌ No, cancel", use_container_width=True):
+            with st.spinner("Resuming with fallback..."):
+                try:
+                    resp = requests.post(
+                        f"{API_BASE}/query/resume",
+                        headers={
+                            **get_auth_headers(),
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "thread_id": st.session_state.paused_thread_id,
+                            "approve": False,
+                            "query": st.session_state.paused_query
+                        }
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        st.session_state.chat_history.append({
+                            "role": "assistant",
+                            "content": data["answer"],
+                        })
+                        # Clear pause state
+                        st.session_state.paused_thread_id = None
+                        st.session_state.paused_query = None
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to resume query: {e}")
 
-    # Call RAG API
-    with st.chat_message("assistant"):
-        with st.spinner("Processing through RAG pipeline..."):
-            start_time = time.time()
-            try:
-                resp = requests.post(
-                    f"{API_BASE}/query",
-                    headers={
-                        **get_auth_headers(),
-                        "Content-Type": "application/json",
-                    },
-                    json={"query": prompt},
-                    timeout=600,
-                )
-                elapsed = time.time() - start_time
+# Chat input (hidden if waiting for HITL approval)
+if not st.session_state.paused_thread_id:
+    if prompt := st.chat_input("Ask a question about your uploaded documents..."):
+        # Display user message
+        st.session_state.chat_history.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
 
-                if resp.status_code == 200:
-                    data = resp.json()
-                    answer = data["answer"]
-                    st.markdown(answer)
+        # Call RAG API
+        with st.chat_message("assistant"):
+            with st.spinner("Processing through RAG pipeline..."):
+                start_time = time.time()
+                try:
+                    resp = requests.post(
+                        f"{API_BASE}/query",
+                        headers={
+                            **get_auth_headers(),
+                            "Content-Type": "application/json",
+                        },
+                        json={"query": prompt},
+                        timeout=600,
+                    )
+                    elapsed = time.time() - start_time
 
-                    # Build trace
-                    trace = {
-                        "cache_hit": data.get("cache_hit", False),
-                        "sources": data.get("sources", []),
-                        "security_details": data.get("security_details", {}),
-                        "response_time": f"{elapsed:.2f}s",
-                    }
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        answer = data["answer"]
+                        st.markdown(answer)
 
-                    with st.expander("🔎 Execution Trace"):
-                        cache_status = "✅ CACHE HIT" if trace["cache_hit"] else "❌ CACHE MISS"
-                        st.markdown(f"**Cache:** {cache_status}")
-                        st.markdown(f"**Response Time:** {trace['response_time']}")
+                        # Build trace
+                        trace = {
+                            "cache_hit": data.get("cache_hit", False),
+                            "sources": data.get("sources", []),
+                            "security_details": data.get("security_details", {}),
+                            "response_time": f"{elapsed:.2f}s",
+                        }
 
-                        if trace["sources"]:
-                            st.markdown("**📚 Sources:**")
-                            for src in trace["sources"]:
-                                st.markdown(
-                                    f"- `{src.get('filename', '?')}` page {src.get('page_number', '?')} "
-                                    f"(relevance: {src.get('relevance_score', 0):.3f})"
-                                )
+                        with st.expander("🔎 Execution Trace"):
+                            cache_status = "✅ CACHE HIT" if trace["cache_hit"] else "❌ CACHE MISS"
+                            st.markdown(f"**Cache:** {cache_status}")
+                            st.markdown(f"**Response Time:** {trace['response_time']}")
 
-                        if trace["security_details"]:
-                            st.markdown("**🛡️ Security:**")
-                            st.json(trace["security_details"])
+                            if trace["sources"]:
+                                st.markdown("**📚 Sources:**")
+                                for src in trace["sources"]:
+                                    st.markdown(
+                                        f"- `{src.get('filename', '?')}` page {src.get('page_number', '?')} "
+                                        f"(relevance: {src.get('relevance_score', 0):.3f})"
+                                    )
 
-                    st.session_state.chat_history.append({
-                        "role": "assistant",
-                        "content": answer,
-                        "trace": trace,
-                    })
+                            if trace["security_details"]:
+                                st.markdown("**🛡️ Security:**")
+                                st.json(trace["security_details"])
 
-                elif resp.status_code == 400:
-                    detail = resp.json().get("detail", {})
-                    error_msg = f"🚫 **Query blocked:** {detail.get('blocked_by', 'Unknown reason')}"
-                    st.error(error_msg)
-                    st.session_state.chat_history.append({
-                        "role": "assistant",
-                        "content": error_msg,
-                    })
+                        st.session_state.chat_history.append({
+                            "role": "assistant",
+                            "content": answer,
+                            "trace": trace,
+                        })
 
-                elif resp.status_code == 429:
-                    st.error("⏱️ Rate limit exceeded. Please wait before sending more queries.")
+                    elif resp.status_code == 202:
+                        # Paused on HITL interrupt
+                        data = resp.json()
+                        st.session_state.paused_thread_id = data["thread_id"]
+                        st.session_state.paused_query = prompt
+                        st.rerun()
 
-                elif resp.status_code == 401:
-                    st.error("🔐 Session expired. Please login again.")
-                    st.session_state.access_token = None
-                    st.rerun()
+                    elif resp.status_code == 400:
+                        detail = resp.json().get("detail", {})
+                        error_msg = f"🚫 **Query blocked:** {detail.get('blocked_by', 'Unknown reason')}"
+                        st.error(error_msg)
+                        st.session_state.chat_history.append({
+                            "role": "assistant",
+                            "content": error_msg,
+                        })
 
-                else:
-                    st.error(f"Error: {resp.status_code} — {resp.text}")
+                    elif resp.status_code == 429:
+                        st.error("⏱️ Rate limit exceeded. Please wait before sending more queries.")
 
-            except requests.ConnectionError:
-                st.error("❌ Cannot connect to the API server. Is it running?")
-            except requests.Timeout:
-                st.error("⏱️ Request timed out. The query may be too complex.")
+                    elif resp.status_code == 401:
+                        st.error("🔐 Session expired. Please login again.")
+                        st.session_state.access_token = None
+                        st.rerun()
+
+                    else:
+                        st.error(f"Error: {resp.status_code} — {resp.text}")
+
+                except requests.ConnectionError:
+                    st.error("❌ Cannot connect to the API server. Is it running?")
+                except requests.Timeout:
+                    st.error("⏱️ Request timed out. The query may be too complex.")

@@ -37,7 +37,8 @@ logging.basicConfig(
 logger = logging.getLogger("main")
 
 # ── Global Checkpointer & Connection Pool ────────────────────────────
-checkpointer = None
+from langgraph.checkpoint.memory import MemorySaver
+checkpointer = MemorySaver()
 pool = None
 
 @asynccontextmanager
@@ -116,6 +117,13 @@ class IngestionResponse(BaseModel):
     pages: int
     chunks: int
     message: str
+
+
+class ResumeRequest(BaseModel):
+    """Schema for resuming paused HITL queries."""
+    thread_id: str
+    approve: bool
+    query: str
 
 
 class HealthResponse(BaseModel):
@@ -299,6 +307,20 @@ def rag_query(
     config = {"configurable": {"thread_id": thread_id}}
     final_state = rag_app.invoke(initial_state, config=config)
 
+    # Check if the graph has paused on an interrupt before web_fallback
+    state_snapshot = rag_app.get_state(config)
+    if state_snapshot.next:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=202,
+            content={
+                "status": "paused",
+                "thread_id": thread_id,
+                "sanitized_query": sanitized_query,
+                "message": "The system needs to perform a web search fallback. Do you approve?"
+            }
+        )
+
     # ── Step 3: Output Security Pipeline ─────────────────────────────
     raw_answer = final_state.get("final_answer", "No answer generated.")
 
@@ -333,6 +355,72 @@ def rag_query(
         # Retry: generate a simpler response
         response = RAGResponse(
             query=sanitized_query,
+            answer=raw_answer if raw_answer else "An error occurred during response generation.",
+            cache_hit=False,
+            sources=sources,
+            security_details={},
+        )
+
+    return response
+
+
+@app.post("/query/resume", response_model=RAGResponse)
+def resume_query(
+    request: ResumeRequest,
+    user: dict = Depends(rate_limit_dependency),
+):
+    """Resume a paused RAG query thread with user HITL approval."""
+    from rag_graph import compile_rag_graph, clear_bm25_cache
+    global checkpointer
+
+    user_id = user.get("sub", "anonymous")
+    thread_id = request.thread_id
+    approve = request.approve
+    config = {"configurable": {"thread_id": thread_id}}
+    rag_app = compile_rag_graph(checkpointer=checkpointer)
+
+    # Get the exact current state snapshot config to avoid forks/restarts
+    state_snapshot = rag_app.get_state(config)
+
+    # Update the state of the active checkpoint with the user's HITL approval choice
+    rag_app.update_state(
+        state_snapshot.config,
+        {"web_search_approved": approve}
+    )
+
+    # 2. Resume execution by invoking with None input (resumes from current checkpoint)
+    final_state = rag_app.invoke(None, config=config)
+
+    # ── Output Security Pipeline ─────────────────────────────────────
+    raw_answer = final_state.get("final_answer", "No answer generated.")
+    output_result = run_output_security_pipeline(raw_answer)
+    final_answer = output_result["sanitized_response"]
+
+    # ── Pydantic Validation (L9) ─────────────────────────────────────
+    sources = []
+    if approve:
+        for doc in final_state.get("web_results", []):
+            sources.append({
+                "filename": doc.get("title", "Web Search Result"),
+                "page_number": doc.get("url", ""),
+                "relevance_score": 1.0,
+            })
+
+    try:
+        response = RAGResponse(
+            query=request.query,
+            answer=final_answer,
+            cache_hit=False,
+            sources=sources,
+            security_details={
+                "input": {},
+                "output": output_result["details"],
+            },
+        )
+    except Exception as e:
+        logger.warning(f"L9 Pydantic validation failed on resume: {e}")
+        response = RAGResponse(
+            query=request.query,
             answer=raw_answer if raw_answer else "An error occurred during response generation.",
             cache_hit=False,
             sources=sources,

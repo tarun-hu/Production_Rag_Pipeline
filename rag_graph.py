@@ -32,6 +32,30 @@ from config import (
 
 logger = logging.getLogger("rag_graph")
 
+# Phrases that indicate the LLM deflected / refused to answer from the context
+_DEFLECTION_PATTERNS = [
+    "does not contain",
+    "do not contain",
+    "doesn't contain",
+    "don't contain",
+    "no information about",
+    "not mentioned in",
+    "no relevant information",
+    "cannot answer",
+    "unable to answer",
+    "not enough information",
+    "no specific information",
+    "not addressed in",
+    "not covered in",
+    "not available in the provided",
+    "beyond the scope of the provided",
+]
+
+def _is_deflection(answer: str) -> bool:
+    """Return True if the generated answer is a deflection / refusal."""
+    lowered = answer.lower()
+    return any(p in lowered for p in _DEFLECTION_PATTERNS)
+
 
 # =====================================================================
 # State Definition
@@ -456,6 +480,19 @@ Respond with ONLY a single decimal number (e.g., 0.85). Nothing else."""
 
     logger.info(f"Self-RAG score: {score:.3f} (threshold={SELF_RAG_QUALITY_THRESHOLD}, retry={retry_count})")
 
+    # ── Deflection Detection ────────────────────────────────────────
+    # If the LLM said "the context doesn't contain...", the retrieved
+    # documents were topically irrelevant.  Route to web search HITL
+    # instead of accepting or retrying this non-answer.
+    if _is_deflection(state["generated_answer"]):
+        logger.info("Self-RAG: Deflection detected in generated answer — routing to web search HITL.")
+        return {
+            "self_rag_score": score,
+            "retry_count": retry_count,
+            "web_search_needed": True,
+            "crag_decision": "web_fallback",
+        }
+
     if score >= SELF_RAG_QUALITY_THRESHOLD or retry_count >= SELF_RAG_MAX_RETRIES:
         return {
             "self_rag_score": score,
@@ -473,12 +510,16 @@ def cache_answer_node(state: RAGState) -> dict:
     """Store the final answer in the RAG answer cache."""
     from cache import set_cached_answer
 
-    # Do not cache fallback LLM error response or document upload warning fallback
+    # Do not cache fallback LLM error response, upload warnings, or deflection answers
     err_msg = "The primary LLM service (NVIDIA DeepSeek NIM) is currently experiencing"
     warn_msg = "You haven't embedded any documents yet"
     
     if err_msg in state["final_answer"] or warn_msg in state["final_answer"]:
         logger.info("Skipping caching for fallback LLM outage or upload warning response.")
+        return {}
+
+    if _is_deflection(state["final_answer"]):
+        logger.info("Skipping caching for deflection/refusal answer.")
         return {}
 
     set_cached_answer(state["query"], state["final_answer"], user_id=state["user_id"])
@@ -497,7 +538,13 @@ def route_after_cache_check(state: RAGState) -> str:
 
 
 def route_after_self_rag(state: RAGState) -> str:
-    """If Self-RAG passed or max retries hit, cache the answer. Otherwise, regenerate."""
+    """If Self-RAG passed or max retries hit, cache the answer.
+    If a deflection was detected, route to web_fallback for HITL.
+    Otherwise, regenerate."""
+    if state.get("web_search_needed") and not state.get("web_search_approved"):
+        # Deflection detected — the local docs were irrelevant.
+        # Route to web_fallback so the user can approve a web search.
+        return "web_fallback"
     if state.get("final_answer"):
         return "cache_answer"
     return "generate"

@@ -484,7 +484,9 @@ Respond with ONLY a single decimal number (e.g., 0.85). Nothing else."""
     # If the LLM said "the context doesn't contain...", the retrieved
     # documents were topically irrelevant.  Route to web search HITL
     # instead of accepting or retrying this non-answer.
-    if _is_deflection(state["generated_answer"]):
+    # BUT: skip this check if web search was already approved & executed —
+    # web search is the last resort, so accept whatever it produces.
+    if _is_deflection(state["generated_answer"]) and not state.get("web_search_approved"):
         logger.info("Self-RAG: Deflection detected in generated answer — routing to web search HITL.")
         return {
             "self_rag_score": score,

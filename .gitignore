@@ -24,3 +24,6 @@ chroma_db/
 qdrant_db/
 items.db
 *.ipynb
+
+summaryy.md
+

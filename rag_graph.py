@@ -362,8 +362,15 @@ def web_fallback_node(state: RAGState) -> dict:
             logger.error(f"Tavily fallback failed: {e}")
             return {"web_results": []}
     else:
-        logger.info("Web search REJECTED or skipped. Directing to document upload warning.")
-        msg = "You haven't embedded any documents yet, upload your files to get started."
+        # If there's already a generated answer (deflection-triggered HITL),
+        # show that answer instead of the generic upload warning.
+        existing_answer = state.get("generated_answer")
+        if existing_answer:
+            logger.info("Web search REJECTED. Returning the existing generated answer.")
+            msg = existing_answer
+        else:
+            logger.info("Web search REJECTED. No documents — showing upload warning.")
+            msg = "You haven't embedded any documents yet, upload your files to get started."
         return {
             "final_answer": msg,
             "generated_answer": msg,

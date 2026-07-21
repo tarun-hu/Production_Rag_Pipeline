@@ -473,10 +473,12 @@ def cache_answer_node(state: RAGState) -> dict:
     """Store the final answer in the RAG answer cache."""
     from cache import set_cached_answer
 
-    # Do not cache fallback LLM error response
+    # Do not cache fallback LLM error response or document upload warning fallback
     err_msg = "The primary LLM service (NVIDIA DeepSeek NIM) is currently experiencing"
-    if err_msg in state["final_answer"]:
-        logger.info("Skipping caching for fallback LLM outage response.")
+    warn_msg = "You haven't embedded any documents yet"
+    
+    if err_msg in state["final_answer"] or warn_msg in state["final_answer"]:
+        logger.info("Skipping caching for fallback LLM outage or upload warning response.")
         return {}
 
     set_cached_answer(state["query"], state["final_answer"], user_id=state["user_id"])

@@ -223,6 +223,17 @@ with st.sidebar:
                                         st.error("Failed to delete.")
                 else:
                     st.caption("No uploaded documents yet.")
+
+            st.markdown("---")
+            if st.button("🧹 Clear Answer Cache", use_container_width=True, help="Purge all your cached answers from Upstash Redis"):
+                cache_del_resp = requests.delete(
+                    f"{API_BASE}/cache",
+                    headers=get_auth_headers(),
+                )
+                if cache_del_resp.status_code == 200:
+                    st.success(cache_del_resp.json().get("message", "Cache cleared!"))
+                else:
+                    st.error("Failed to clear cache.")
         except requests.ConnectionError:
             st.warning("API not reachable.")
     else:

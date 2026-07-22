@@ -282,6 +282,21 @@ def delete_user_document(
     }
 
 
+@app.delete("/cache")
+def clear_cache_endpoint(
+    user: dict = Depends(rate_limit_dependency),
+):
+    """Clear all cached answers for the authenticated user."""
+    from cache import clear_user_cache
+    user_id = user.get("sub", "anonymous")
+    cleared_count = clear_user_cache(user_id)
+    return {
+        "status": "success",
+        "cleared_count": cleared_count,
+        "message": f"Successfully cleared {cleared_count} cached answers.",
+    }
+
+
 # =====================================================================
 # Protected: RAG Query
 # =====================================================================

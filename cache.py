@@ -102,6 +102,39 @@ def set_cached_answer(query: str, answer: str, user_id: str) -> None:
         logger.error(f"Answer cache write error: {e}")
 
 
+def clear_user_cache(user_id: str) -> int:
+    """Clear all answer cache entries for a specific user from Upstash Redis."""
+    try:
+        cursor = 0
+        keys_to_delete = []
+        pattern = f"rag:{user_id}:*"
+        cursor, keys = redis.scan(cursor=cursor, match=pattern, count=2000)
+        keys_to_delete.extend(keys)
+        while cursor != 0:
+            cursor, keys = redis.scan(cursor=cursor, match=pattern, count=2000)
+            keys_to_delete.extend(keys)
+            
+        if keys_to_delete:
+            for k in keys_to_delete:
+                redis.delete(k)
+            logger.info(f"Cleared {len(keys_to_delete)} cache keys for user '{user_id}'")
+            return len(keys_to_delete)
+    except Exception as e:
+        logger.error(f"Failed to clear cache for user '{user_id}': {e}")
+    return 0
+
+
+def flush_all_redis_cache() -> bool:
+    """Flush the entire Upstash Redis database."""
+    try:
+        redis.flushdb()
+        logger.info("Flushed entire Upstash Redis cache database.")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to flush Redis: {e}")
+        return False
+
+
 # =====================================================================
 # Cached Embedding Call Wrapper
 # =====================================================================

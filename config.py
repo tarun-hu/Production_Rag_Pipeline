@@ -36,7 +36,7 @@ UPSTASH_REDIS_REST_URL = os.environ.get("UPSTASH_REDIS_REST_URL", "")
 UPSTASH_REDIS_REST_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
 
 # ── RAG Pipeline Thresholds ──────────────────────────────────────────
-CRAG_RELEVANCE_THRESHOLD = float(os.environ.get("CRAG_RELEVANCE_THRESHOLD", "0.7"))
+CRAG_RELEVANCE_THRESHOLD = float(os.environ.get("CRAG_RELEVANCE_THRESHOLD", "0.05"))
 SELF_RAG_QUALITY_THRESHOLD = float(os.environ.get("SELF_RAG_QUALITY_THRESHOLD", "0.8"))
 SELF_RAG_MAX_RETRIES = int(os.environ.get("SELF_RAG_MAX_RETRIES", "2"))
 RERANK_TOP_K = int(os.environ.get("RERANK_TOP_K", "15"))

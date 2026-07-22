@@ -41,8 +41,8 @@ def parse_pdf(file: BinaryIO, filename: str) -> list[dict]:
         llama_docs = reader.load_data()
 
     documents = []
-    for doc in llama_docs:
-        page_num = doc.metadata.get("page_label", "unknown")
+    for idx, doc in enumerate(llama_docs, start=1):
+        page_num = str(doc.metadata.get("page_label") or doc.metadata.get("page_number") or idx)
         documents.append({
             "text": doc.text,
             "page_number": page_num,
@@ -56,7 +56,7 @@ def parse_pdf(file: BinaryIO, filename: str) -> list[dict]:
 def post_process_chunks(chunks: list[dict], combined_text: str) -> list[dict]:
     """
     Post-process chunks to:
-      1. Extract page numbers based on the position of page markers in combined_text.
+      1. Extract exact page numbers based on the position of page markers in combined_text.
       2. Strip [PAGE_X] layout markers from the final chunk text.
     """
     page_positions = []
@@ -65,21 +65,31 @@ def post_process_chunks(chunks: list[dict], combined_text: str) -> list[dict]:
         
     for chunk in chunks:
         content = chunk["content"]
+        # Clean page markers out of chunk content first
+        cleaned_content = re.sub(r'\[PAGE_\d+\]', '', content).strip()
         
-        # Find where this chunk content is located inside the combined document text
-        start_pos = combined_text.find(content)
+        # Take a robust snippet of the cleaned content (first 50 chars) to locate position in combined_text
+        snippet = cleaned_content[:50].strip()
+        start_pos = -1
+        
+        if snippet:
+            start_pos = combined_text.find(snippet)
+            if start_pos == -1 and len(cleaned_content) > 100:
+                # Try middle snippet fallback if head snippet had formatting alterations
+                mid = len(cleaned_content) // 2
+                snippet_mid = cleaned_content[mid:mid+50].strip()
+                if snippet_mid:
+                    start_pos = combined_text.find(snippet_mid)
+        
         page_num = "1"
-        
-        if start_pos != -1:
-            # Find the last page marker that starts before this chunk
+        if start_pos != -1 and page_positions:
+            # Find the last page marker that starts before or at start_pos
             for num, pos in page_positions:
                 if pos <= start_pos:
                     page_num = num
                 else:
                     break
         
-        # Clean page markers out of the final chunk content
-        cleaned_content = re.sub(r'\[PAGE_\d+\]', '', content).strip()
         chunk["content"] = cleaned_content
         
         # Set final metadata

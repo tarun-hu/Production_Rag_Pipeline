@@ -208,3 +208,50 @@ def get_document_count(user_id: Optional[str] = None) -> int:
         )
         
     return count_res.count
+
+
+def get_user_documents(user_id: str) -> list[dict]:
+    """
+    Retrieve a summary of all unique uploaded document files for a user.
+    Returns: [{"filename": "doc.pdf", "chunk_count": 42}, ...]
+    """
+    all_chunks = get_all_documents(user_id)
+    doc_counts = {}
+    for chunk in all_chunks:
+        meta = chunk.get("metadata", {})
+        fname = meta.get("filename", "Unknown Document")
+        doc_counts[fname] = doc_counts.get(fname, 0) + 1
+
+    return [
+        {"filename": fname, "chunk_count": count}
+        for fname, count in doc_counts.items()
+    ]
+
+
+def delete_document(filename: str, user_id: str) -> int:
+    """
+    Delete all chunks in Qdrant belonging to a specific filename for a specific user.
+    Returns the number of deleted chunks.
+    """
+    from qdrant_client.models import FilterSelector
+    client = _get_client()
+
+    # Get count before deletion to report accurate count
+    all_chunks = get_all_documents(user_id)
+    initial_chunks = sum(1 for c in all_chunks if c.get("metadata", {}).get("filename") == filename)
+
+    delete_filter = Filter(
+        must=[
+            FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+            FieldCondition(key="metadata.filename", match=MatchValue(value=filename)),
+        ]
+    )
+
+    client.delete(
+        collection_name=COLLECTION_NAME,
+        points_selector=FilterSelector(filter=delete_filter),
+        wait=True,
+    )
+
+    logger.info(f"Deleted document '{filename}' ({initial_chunks} chunks) for user '{user_id}' from Qdrant.")
+    return initial_chunks

@@ -39,7 +39,7 @@ UPSTASH_REDIS_REST_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
 CRAG_RELEVANCE_THRESHOLD = float(os.environ.get("CRAG_RELEVANCE_THRESHOLD", "0.7"))
 SELF_RAG_QUALITY_THRESHOLD = float(os.environ.get("SELF_RAG_QUALITY_THRESHOLD", "0.8"))
 SELF_RAG_MAX_RETRIES = int(os.environ.get("SELF_RAG_MAX_RETRIES", "2"))
-RERANK_TOP_K = int(os.environ.get("RERANK_TOP_K", "5"))
+RERANK_TOP_K = int(os.environ.get("RERANK_TOP_K", "15"))
 HYDE_NUM_HYPOTHETICALS = int(os.environ.get("HYDE_NUM_HYPOTHETICALS", "3"))
 
 # ── Cache TTLs (seconds) ─────────────────────────────────────────────

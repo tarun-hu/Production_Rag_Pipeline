@@ -181,8 +181,8 @@ def clear_bm25_cache(user_id: str):
 def hybrid_retrieval_node(state: RAGState) -> dict:
     """
     Perform hybrid retrieval:
-      - Dense: cosine similarity via local Qdrant (filtered by user_id, k=12)
-      - Sparse: BM25 index cached in memory per user_id (k=12)
+      - Dense: cosine similarity via local Qdrant (filtered by user_id, k=25)
+      - Sparse: BM25 index cached in memory per user_id (k=25)
     """
     import vector_store
     from rank_bm25 import BM25Okapi
@@ -191,8 +191,8 @@ def hybrid_retrieval_node(state: RAGState) -> dict:
     query_emb = state["query_embedding"]
     user_id = state["user_id"]
 
-    # Dense retrieval via local Qdrant with user filtering (reduced from 20 to 12)
-    dense = vector_store.search(query_emb, user_id=user_id, k=12, threshold=0.0)
+    # Dense retrieval via local Qdrant with user filtering (top 25)
+    dense = vector_store.search(query_emb, user_id=user_id, k=25, threshold=0.0)
 
     # Sparse retrieval via BM25 over user's documents
     global _bm25_cache, _corpus_cache
@@ -219,12 +219,12 @@ def hybrid_retrieval_node(state: RAGState) -> dict:
         tokenized_query = query.lower().split()
         scores = bm25.get_scores(tokenized_query)
 
-        # Get top 12 by BM25 score (reduced from 20 to 12)
+        # Get top 25 by BM25 score
         scored_docs = list(zip(all_docs, scores))
         scored_docs.sort(key=lambda x: x[1], reverse=True)
         sparse = [
             {**doc, "bm25_score": float(score)}
-            for doc, score in scored_docs[:12]
+            for doc, score in scored_docs[:25]
             if score > 0
         ]
 
@@ -233,50 +233,58 @@ def hybrid_retrieval_node(state: RAGState) -> dict:
 
 
 def rrf_fusion_node(state: RAGState) -> dict:
-    """Merge dense and sparse results using Reciprocal Rank Fusion (k=60)."""
-    k = 60
-    rrf_scores: dict[str, float] = {}
-    doc_map: dict[str, dict] = {}
+    """
+    Reciprocal Rank Fusion (RRF) with k=60 constant.
+    Combines dense and sparse search results into a unified candidate set.
+    """
+    dense = state.get("dense_results", [])
+    sparse = state.get("sparse_results", [])
 
-    # Score dense results
-    for rank, doc in enumerate(state["dense_results"]):
+    k_constant = 60
+    rrf_scores = {}
+    doc_map = {}
+
+    for rank, doc in enumerate(dense):
         doc_id = doc["id"]
-        rrf_scores[doc_id] = rrf_scores.get(doc_id, 0) + 1.0 / (k + rank + 1)
         doc_map[doc_id] = doc
+        rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + (1.0 / (k_constant + rank + 1))
 
-    # Score sparse results
-    for rank, doc in enumerate(state["sparse_results"]):
+    for rank, doc in enumerate(sparse):
         doc_id = doc["id"]
-        rrf_scores[doc_id] = rrf_scores.get(doc_id, 0) + 1.0 / (k + rank + 1)
-        doc_map[doc_id] = doc
+        if doc_id not in doc_map:
+            doc_map[doc_id] = doc
+        rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + (1.0 / (k_constant + rank + 1))
 
-    # Sort by combined RRF score
-    sorted_ids = sorted(rrf_scores, key=rrf_scores.get, reverse=True)
     fused = []
-    for doc_id in sorted_ids:
-        doc = doc_map[doc_id].copy()
-        doc["rrf_score"] = rrf_scores[doc_id]
-        fused.append(doc)
+    for doc_id, score in rrf_scores.items():
+        d = doc_map[doc_id].copy()
+        d["rrf_score"] = score
+        fused.append(d)
 
+    fused.sort(key=lambda x: x["rrf_score"], reverse=True)
     logger.info(f"RRF fusion produced {len(fused)} merged results")
     return {"fused_results": fused}
 
 
 def rerank_node(state: RAGState) -> dict:
-    """Rerank fused results using local CrossEncoder model (GPU/CPU)."""
+    """
+    Cross-Encoder Reranking using BAAI/bge-reranker-base.
+    Calculates precise relevance scores on GPU via PyTorch FP16 autocast.
+    """
     import models_local
     import torch
 
+    candidates = state.get("fused_results", [])
     query = state["query"]
-    candidates = state["fused_results"]
 
     if not candidates:
+        logger.info("Rerank: No candidates to rerank.")
         return {"reranked_results": []}
 
     ranker = models_local.get_reranker_model()
 
-    # Prepare input pairs for local CrossEncoder
-    pairs = [(query, doc["content"]) for doc in candidates]
+    # Form query-document pairs
+    pairs = [[query, doc["content"]] for doc in candidates]
     
     # Compute relevance scores locally on GPU (autocast FP16) or CPU
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -413,9 +421,14 @@ def generate_node(state: RAGState) -> dict:
     client = get_llm_client()
 
     system_prompt = (
-        "You are a helpful RAG assistant. Answer the user's question based STRICTLY on the "
-        "provided context below. If the context doesn't contain enough information to answer, "
-        "say so clearly. Cite the source document and page number when possible."
+        "You are an expert, highly intelligent RAG assistant. Your job is to provide a rich, detailed, "
+        "and well-structured answer to the user's question by carefully analyzing ALL provided context chunks below.\n\n"
+        "Instructions:\n"
+        "1. Synthesize concepts, definitions, formulas, real-world applications, and explanations across ALL context chunks provided.\n"
+        "2. Do NOT give up or say 'no information' if the topic is present in any chunk. Extract every relevant detail, example, and derivation.\n"
+        "3. Focus deeply on the main terms of the user's query.\n"
+        "4. Organize your response clearly with headings, bullet points, and citations (source filename and page number).\n"
+        "5. If a chunk contains questions or exercises (e.g. 'Find applications...'), use your scientific reasoning grounded in the surrounding context chunks to answer them thoroughly."
     )
 
     user_prompt = (

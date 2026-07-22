@@ -248,6 +248,40 @@ def upload_document(
     return IngestionResponse(**result)
 
 
+@app.get("/documents/list")
+def list_user_documents(
+    user: dict = Depends(rate_limit_dependency),
+):
+    """List all unique documents uploaded by the authenticated user."""
+    import vector_store
+    user_id = user.get("sub", "anonymous")
+    docs = vector_store.get_user_documents(user_id)
+    return {"documents": docs}
+
+
+@app.delete("/documents/{filename:path}")
+def delete_user_document(
+    filename: str,
+    user: dict = Depends(rate_limit_dependency),
+):
+    """Delete an uploaded document and remove all of its chunks from Qdrant."""
+    import vector_store
+    from rag_graph import clear_bm25_cache
+
+    user_id = user.get("sub", "anonymous")
+    deleted_chunks = vector_store.delete_document(filename, user_id)
+
+    # Invalidate cached BM25 index so search doesn't query deleted documents
+    clear_bm25_cache(user_id)
+
+    return {
+        "status": "success",
+        "filename": filename,
+        "deleted_chunks": deleted_chunks,
+        "message": f"Successfully deleted document '{filename}' ({deleted_chunks} chunks removed).",
+    }
+
+
 # =====================================================================
 # Protected: RAG Query
 # =====================================================================

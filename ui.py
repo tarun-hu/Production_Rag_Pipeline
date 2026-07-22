@@ -181,8 +181,8 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # ── Sidebar: System Status ───────────────────────────────────────
-    st.markdown("### 📊 System Status")
+    # ── Sidebar: System Status & Document Management ─────────────────
+    st.markdown("### 📊 Document Management")
     if st.session_state.access_token:
         try:
             resp = requests.get(
@@ -191,15 +191,42 @@ with st.sidebar:
             )
             if resp.status_code == 200:
                 data = resp.json()
-                st.metric("Documents Indexed", data.get("documents_indexed", 0))
-                st.caption("Showing your personal document count.")
+                st.metric("Total Chunks Indexed", data.get("documents_indexed", 0))
             else:
-                st.metric("Documents Indexed", 0)
-                st.caption("Unable to fetch stats.")
+                st.metric("Total Chunks Indexed", 0)
+
+            # Fetch list of user's uploaded documents
+            doc_list_resp = requests.get(
+                f"{API_BASE}/documents/list",
+                headers=get_auth_headers(),
+            )
+            if doc_list_resp.status_code == 200:
+                docs = doc_list_resp.json().get("documents", [])
+                if docs:
+                    with st.expander(f"📁 Your Documents ({len(docs)})", expanded=True):
+                        for doc_info in docs:
+                            fname = doc_info["filename"]
+                            c_count = doc_info["chunk_count"]
+                            col1, col2 = st.columns([3, 1])
+                            with col1:
+                                st.markdown(f"**{fname}**\n<small>{c_count} chunks</small>", unsafe_allow_html=True)
+                            with col2:
+                                if st.button("🗑️", key=f"del_{fname}", help=f"Delete '{fname}' from Qdrant"):
+                                    del_resp = requests.delete(
+                                        f"{API_BASE}/documents/{fname}",
+                                        headers=get_auth_headers(),
+                                    )
+                                    if del_resp.status_code == 200:
+                                        st.success(f"Deleted {fname}!")
+                                        st.rerun()
+                                    else:
+                                        st.error("Failed to delete.")
+                else:
+                    st.caption("No uploaded documents yet.")
         except requests.ConnectionError:
             st.warning("API not reachable.")
     else:
-        st.metric("Documents Indexed", 0)
+        st.metric("Total Chunks Indexed", 0)
         st.caption("Login to view your indexed documents.")
 
 

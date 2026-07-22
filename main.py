@@ -50,9 +50,17 @@ async def lifespan(app: FastAPI):
             from langgraph.checkpoint.postgres import PostgresSaver
 
             logger.info("Initializing PostgresSaver checkpointer pool...")
-            # Initialize connection pool. We use a max_size of 10 to be gentle on Supabase connection limits.
-            # We set autocommit=True so CREATE INDEX CONCURRENTLY during checkpointer setup runs successfully.
-            pool = ConnectionPool(conninfo=SUPABASE_DB_URL, max_size=10, kwargs={"autocommit": True})
+            # Initialize connection pool with health checking and idle timeouts.
+            # max_size=10 keeps within Supabase limits; autocommit=True allows CREATE INDEX CONCURRENTLY;
+            # check_connection + max_idle prevents stale/dropped connections.
+            pool = ConnectionPool(
+                conninfo=SUPABASE_DB_URL,
+                max_size=10,
+                max_idle=300,
+                max_lifetime=1800,
+                check=ConnectionPool.check_connection,
+                kwargs={"autocommit": True},
+            )
             
             # Initialize PostgresSaver checkpointer
             checkpointer = PostgresSaver(pool)

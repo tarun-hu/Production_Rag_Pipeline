@@ -25,5 +25,7 @@ qdrant_db/
 items.db
 *.ipynb
 
+summary.md
+SUMMARY.md
 summaryy.md
 
